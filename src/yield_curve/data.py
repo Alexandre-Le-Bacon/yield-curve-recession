@@ -5,6 +5,7 @@ The snapshots are produced by ``scripts/download_data.py``.
 """
 
 import io
+import json
 import os
 from collections.abc import Sequence
 from datetime import date, datetime
@@ -24,6 +25,7 @@ SERIES_IDS: tuple[str, ...] = (
 )
 
 DATA_DIR_ENV_VAR = "YIELD_CURVE_DATA_DIR"
+METADATA_FILENAME = "metadata.json"
 
 # FRED has used both names for the date column over time.
 _DATE_COLUMNS = ("observation_date", "DATE")
@@ -196,6 +198,47 @@ def load_series_frame(
     frame = pd.concat([load_series(sid, data_dir) for sid in ids], axis=1, sort=True)
     frame.index.name = "date"
     return frame
+
+
+def load_download_date(data_dir: str | Path | None = None) -> date:
+    """Read the date the snapshots were downloaded from ``metadata.json``.
+
+    Args:
+        data_dir: Directory containing ``metadata.json``, as written by
+            ``scripts/download_data.py``. Defaults to ``get_default_data_dir()``.
+
+    Returns:
+        Calendar date of the ``downloaded_at`` timestamp, as recorded (UTC for
+        files written by the download script).
+
+    Raises:
+        FileNotFoundError: If ``metadata.json`` does not exist.
+        ValueError: If the file is not valid JSON, is not a JSON object, or has no
+            valid ISO 8601 ``downloaded_at`` timestamp.
+    """
+    directory = Path(data_dir) if data_dir is not None else get_default_data_dir()
+    path = directory / METADATA_FILENAME
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No metadata file at {path}. "
+            "Run `uv run python scripts/download_data.py` to download the data."
+        )
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{path} is not valid JSON.") from error
+    if not isinstance(metadata, dict):
+        raise ValueError(f"{path} must contain a JSON object.")
+
+    downloaded_at = metadata.get("downloaded_at")
+    if not isinstance(downloaded_at, str):
+        raise ValueError(f"{path} has no 'downloaded_at' timestamp.")
+    try:
+        return datetime.fromisoformat(downloaded_at).date()
+    except ValueError as error:
+        raise ValueError(
+            f"Invalid 'downloaded_at' timestamp in {path}: {downloaded_at!r}."
+        ) from error
 
 
 def _to_timestamp(value: DateLike | None, name: str) -> pd.Timestamp | None:
