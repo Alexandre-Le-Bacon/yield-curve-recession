@@ -36,6 +36,9 @@ select = [
     "ANN", # flake8-annotations (type hints)
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["yield_curve", "download_data"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
@@ -46,6 +49,8 @@ convention = "google"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Lets tests import the standalone script as `download_data`.
+pythonpath = ["scripts"]
 addopts = ["--strict-markers", "--strict-config"]
 
 [tool.coverage.run]
