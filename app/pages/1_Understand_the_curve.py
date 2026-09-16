@@ -3,9 +3,8 @@ from datetime import date
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from charts import INVERSION_COLOR, SERIES_COLOR
 from loaders import (
-    INVERSION_COLOR,
-    SERIES_COLOR,
     get_recession_indicator,
     get_yields,
     show_data_source,

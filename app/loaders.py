@@ -16,11 +16,6 @@ from yield_curve.features import YIELD_CURVE_SERIES, monthly_spread
 # Inversions shorter than this are treated as noise in the key facts and charts.
 DEFAULT_MIN_MONTHS = 3
 
-# Chart colors (reference data-viz palette): series, inversion and recession marks.
-SERIES_COLOR = "#2a78d6"
-INVERSION_COLOR = "#eb6834"
-RECESSION_COLOR = "#8a8984"
-
 
 @st.cache_data
 def get_monthly_spread() -> pd.Series:
