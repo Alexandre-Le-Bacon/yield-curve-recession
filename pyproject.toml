@@ -1,0 +1,69 @@
+[project]
+name = "yield-curve"
+version = "0.1.0"
+description = "Can the bond market predict recessions? A Streamlit app exploring the US yield curve."
+readme = "README.md"
+authors = [{ name = "Alexandre Le Bacon" }]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "pandas>=3.0.5",
+    "plotly>=7.1.0",
+    "scikit-learn>=1.9.1",
+    "streamlit>=1.64.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.15,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Never pick up a system/Anaconda interpreter: always use a uv-managed Python.
+python-preference = "only-managed"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort (import order)
+    "B",   # flake8-bugbear (likely bugs)
+    "UP",  # pyupgrade (modern syntax)
+    "D",   # pydocstyle (docstrings)
+    "ANN", # flake8-annotations (type hints)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["yield_curve", "download_data"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Docstrings and annotations are required in src/ and scripts/, not in tests or the UI.
+"tests/**" = ["D", "ANN"]
+"app/**" = ["D", "ANN"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Lets tests import the standalone script as `download_data`.
+pythonpath = ["scripts"]
+addopts = ["--strict-markers", "--strict-config"]
+
+[tool.coverage.run]
+source = ["yield_curve"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.8",
+]
