@@ -41,10 +41,13 @@ col1, col2, col3 = st.columns(3)
 col1.metric("Data range", f"{first_month:%Y} – {last_month:%Y}")
 col2.metric("Yield curve inversions", len(episodes))
 col3.metric("Recessions", len(recessions))
+col3.caption(
+    f"Recessions that started after {first_month:%B %Y}, when the spread data "
+    "begins. The signal page also shades a recession already under way then."
+)
 st.caption(
     f"An inversion counts here only if the monthly spread stayed below zero for at "
-    f"least {DEFAULT_MIN_MONTHS} months in a row, to ignore short blips. Recessions "
-    f"are those that started after {first_month:%B %Y}."
+    f"least {DEFAULT_MIN_MONTHS} months in a row, to ignore short blips."
 )
 
 st.subheader("Explore")
@@ -57,4 +60,14 @@ st.page_link(
     "pages/2_The_signal.py",
     label="The signal: 40 years of the spread, next to every recession",
     icon="🔔",
+)
+st.page_link(
+    "pages/3_The_model.py",
+    label="The model: today's 12-month recession probability, and how well it works",
+    icon="🎯",
+)
+st.page_link(
+    "pages/4_Data_and_method.py",
+    label="Data and method: sources, how the model is built, and its limits",
+    icon="📚",
 )

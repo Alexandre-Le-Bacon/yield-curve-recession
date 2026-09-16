@@ -4,6 +4,8 @@ All functions are pure: they take pandas objects indexed by dates, never modify
 their inputs, and return new objects.
 """
 
+from dataclasses import dataclass
+
 import pandas as pd
 
 from yield_curve.data import DateLike, _to_timestamp
@@ -222,6 +224,104 @@ def recession_within_horizon(usrec: pd.Series, horizon: int = 12) -> pd.Series:
     forward_max = full[::-1].rolling(horizon, min_periods=horizon).max()[::-1]
     target = forward_max.shift(-1)
     return target.reindex(usrec.index).rename(name)
+
+
+def last_complete_month(daily: pd.Series) -> pd.Timestamp:
+    """Find the last calendar month fully covered by a daily business-day series.
+
+    A month counts as complete when the last valid observation falls on or after
+    its last business day (Monday to Friday). Otherwise the month is still in
+    progress and the previous month is returned. The rule is conservative: if the
+    last business day of a month is a market holiday, that month only counts as
+    complete once data for the next month arrives.
+
+    Args:
+        daily: Numeric series indexed by a sorted ``DatetimeIndex`` without
+            duplicates, e.g. the daily 10Y-3M spread.
+
+    Returns:
+        First day of the last complete month.
+
+    Raises:
+        TypeError: If ``daily`` is not a numeric Series indexed by dates.
+        ValueError: If the dates are unsorted or duplicated, or the series has no
+            valid observation.
+    """
+    daily = _validate_dated_series(daily, "daily")
+    valid = daily.dropna()
+    if valid.empty:
+        raise ValueError("daily has no valid observation.")
+    last_day = valid.index[-1].normalize()
+    month_start = last_day.to_period("M").to_timestamp()
+    if last_day >= last_day + pd.offsets.BMonthEnd(0):
+        return month_start
+    return month_start - pd.offsets.MonthBegin(1)
+
+
+@dataclass(frozen=True)
+class RecessionAfter:
+    """What happened in the months after a given month.
+
+    Attributes:
+        month: First day of the reference month.
+        months: Length of the window looked at, in months.
+        first_recession_month: First recession month in the window, or ``None``.
+        months_later: Number of months between ``month`` and
+            ``first_recession_month``, or ``None``.
+        complete: Whether every month of the window is known. When it is
+            ``False`` and no recession was found, the answer may still change.
+    """
+
+    month: pd.Timestamp
+    months: int
+    first_recession_month: pd.Timestamp | None
+    months_later: int | None
+    complete: bool
+
+
+def recession_after(
+    usrec: pd.Series, when: DateLike, months: int = 24
+) -> RecessionAfter:
+    """Check whether a recession started in the months following a given month.
+
+    The window is ``(month of when, month of when + months]``: the reference
+    month itself is excluded.
+
+    Args:
+        usrec: Monthly NBER recession indicator (``USREC``), indexed by month
+            starts, with values 0, 1 or ``NaN``.
+        when: Any date within the reference month.
+        months: Length of the window, in months. Defaults to 24.
+
+    Returns:
+        A ``RecessionAfter`` with the first recession month found in the window
+        (if any) and whether the whole window is covered by known data.
+
+    Raises:
+        TypeError: If ``usrec`` is not a numeric Series indexed by dates, ``when``
+            has an unsupported type, or ``months`` is not an integer.
+        ValueError: If the dates are unsorted, duplicated or not month starts, a
+            value is not 0, 1 or missing, ``when`` is not a valid date, or
+            ``months`` is below 1.
+    """
+    usrec = _validate_recession_indicator(usrec)
+    months = _validate_positive_int(months, "months")
+    if when is None:
+        raise TypeError("when must be a date, got None.")
+    month = _to_timestamp(when, "when").to_period("M").to_timestamp()
+
+    window = pd.date_range(
+        month + pd.offsets.MonthBegin(1), periods=months, freq="MS", name="date"
+    )
+    values = usrec.reindex(window)
+    recession_months = values.index[values == 1]
+    complete = bool(values.notna().all())
+    if recession_months.empty:
+        return RecessionAfter(month, months, None, None, complete)
+
+    first = recession_months[0]
+    months_later = (first.year - month.year) * 12 + first.month - month.month
+    return RecessionAfter(month, months, first, months_later, complete)
 
 
 def yield_curve_on(

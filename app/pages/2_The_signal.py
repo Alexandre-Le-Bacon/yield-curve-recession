@@ -1,10 +1,14 @@
 import plotly.graph_objects as go
 import streamlit as st
-from loaders import (
-    DEFAULT_MIN_MONTHS,
+from charts import (
     INVERSION_COLOR,
     RECESSION_COLOR,
     SERIES_COLOR,
+    shade_periods,
+    time_series_figure,
+)
+from loaders import (
+    DEFAULT_MIN_MONTHS,
     get_monthly_spread,
     get_recession_indicator,
     show_data_source,
@@ -62,28 +66,12 @@ col1, col2 = st.columns(2)
 col1.metric("Inversion episodes in range", len(episodes))
 col2.metric("Recession periods in range", len(recessions))
 
-figure = go.Figure()
-for periods, color in ((recessions, RECESSION_COLOR), (episodes, INVERSION_COLOR)):
-    for period_start, period_end in periods:
-        figure.add_vrect(
-            x0=period_start,
-            x1=period_end,
-            fillcolor=color,
-            opacity=0.25,
-            line_width=0,
-            layer="below",
-        )
-# Invisible traces so the shaded bands appear in the legend.
-for name, color in (("Recession", RECESSION_COLOR), ("Inversion", INVERSION_COLOR)):
-    figure.add_trace(
-        go.Scatter(
-            x=[None],
-            y=[None],
-            mode="markers",
-            marker={"size": 12, "symbol": "square", "color": color, "opacity": 0.5},
-            name=name,
-        )
-    )
+figure = time_series_figure(
+    "10-year minus 3-month Treasury spread (monthly average)",
+    "Spread (percentage points)",
+)
+shade_periods(figure, recessions, RECESSION_COLOR, "Recession")
+shade_periods(figure, episodes, INVERSION_COLOR, "Inversion")
 figure.add_trace(
     go.Scatter(
         x=spread_in_range.index,
@@ -95,15 +83,6 @@ figure.add_trace(
     )
 )
 figure.add_hline(y=0, line_dash="dash", line_width=1, line_color=RECESSION_COLOR)
-figure.update_layout(
-    title="10-year minus 3-month Treasury spread (monthly average)",
-    # Explicit: the legend-only traces above have no dates for Plotly to infer from.
-    xaxis={"type": "date", "title": None},
-    yaxis_title="Spread (percentage points)",
-    hovermode="x unified",
-    legend={"orientation": "h", "y": -0.12},
-    margin={"t": 60},
-)
 st.plotly_chart(figure)
 
 st.caption(

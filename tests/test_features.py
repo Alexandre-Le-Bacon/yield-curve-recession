@@ -9,7 +9,9 @@ from yield_curve.features import (
     YIELD_CURVE_SERIES,
     inversion_episodes,
     inversion_flag,
+    last_complete_month,
     monthly_spread,
+    recession_after,
     recession_periods,
     recession_within_horizon,
     yield_curve_on,
@@ -448,3 +450,151 @@ class TestYieldCurveOn:
         duplicated = pd.concat([yields.iloc[[0]], yields.iloc[[0]]])
         with pytest.raises(ValueError, match="duplicate"):
             yield_curve_on(duplicated, "2020-01-02")
+
+
+# --- last_complete_month -------------------------------------------------------
+
+
+def business_days(start: str, end: str) -> pd.Series:
+    index = pd.bdate_range(start, end, name="date")
+    return pd.Series(1.0, index=index, name="T10Y3M")
+
+
+class TestLastCompleteMonth:
+    def test_mid_month_data_gives_previous_month(self):
+        assert last_complete_month(business_days("2026-07-01", "2026-09-16")) == ts(
+            "2026-08-01"
+        )
+
+    def test_data_on_last_business_day_completes_the_month(self):
+        # 2026-09-30 is a Wednesday.
+        daily = business_days("2026-08-01", "2026-09-30")
+        assert last_complete_month(daily) == ts("2026-09-01")
+
+    def test_month_ending_on_a_weekend(self):
+        # 2024-08-31 is a Saturday: Friday 2024-08-30 is the last business day.
+        daily = business_days("2024-07-01", "2024-08-30")
+        assert last_complete_month(daily) == ts("2024-08-01")
+
+    def test_day_before_last_business_day_is_incomplete(self):
+        daily = business_days("2024-07-01", "2024-08-29")
+        assert last_complete_month(daily) == ts("2024-07-01")
+
+    def test_trailing_missing_values_are_ignored(self):
+        daily = business_days("2026-08-01", "2026-09-30")
+        daily.loc["2026-09-30"] = np.nan
+        assert last_complete_month(daily) == ts("2026-08-01")
+
+    def test_first_month_incomplete_gives_month_before_the_data(self):
+        daily = business_days("2026-09-01", "2026-09-16")
+        assert last_complete_month(daily) == ts("2026-08-01")
+
+    def test_ignores_time_of_day(self):
+        index = pd.DatetimeIndex([pd.Timestamp("2024-08-30 18:00")])
+        assert last_complete_month(pd.Series([1.0], index=index)) == ts("2024-08-01")
+
+    def test_all_missing_raises(self):
+        daily = business_days("2026-09-01", "2026-09-16") * np.nan
+        with pytest.raises(ValueError, match="no valid observation"):
+            last_complete_month(daily)
+
+    def test_empty_raises(self):
+        empty = pd.Series([], index=pd.DatetimeIndex([]), dtype="float64")
+        with pytest.raises(ValueError, match="no valid observation"):
+            last_complete_month(empty)
+
+    def test_rejects_non_series(self):
+        with pytest.raises(TypeError, match="pandas Series"):
+            last_complete_month("2026-09-16")
+
+
+# --- recession_after -----------------------------------------------------------
+
+
+class TestRecessionAfter:
+    @pytest.fixture
+    def usrec(self) -> pd.Series:
+        # Recession in months 5 and 6 (2020-05, 2020-06), data ends 2020-12.
+        values = [0.0] * 12
+        values[4] = values[5] = 1.0
+        return months("2020-01-01", values, name="USREC")
+
+    def test_finds_first_recession_month(self, usrec):
+        result = recession_after(usrec, "2020-02-15", months=6)
+
+        assert result.month == ts("2020-02-01")
+        assert result.months == 6
+        assert result.first_recession_month == ts("2020-05-01")
+        assert result.months_later == 3
+        assert result.complete is True
+
+    def test_reference_month_is_excluded(self, usrec):
+        result = recession_after(usrec, "2020-05-01", months=1)
+        assert result.first_recession_month == ts("2020-06-01")
+        assert result.months_later == 1
+
+    def test_window_end_is_included(self, usrec):
+        assert recession_after(usrec, "2020-01-01", months=4).months_later == 4
+        assert (
+            recession_after(usrec, "2020-01-01", months=3).first_recession_month is None
+        )
+
+    def test_no_recession_in_complete_window(self, usrec):
+        result = recession_after(usrec, "2020-06-01", months=6)
+
+        assert result.first_recession_month is None
+        assert result.months_later is None
+        assert result.complete is True
+
+    def test_window_past_the_data_is_incomplete(self, usrec):
+        result = recession_after(usrec, "2020-08-01")
+
+        assert result.months == 24
+        assert result.first_recession_month is None
+        assert result.complete is False
+
+    def test_recession_found_even_if_window_incomplete(self, usrec):
+        result = recession_after(usrec, "2020-03-01", months=24)
+        assert result.first_recession_month == ts("2020-05-01")
+        assert result.complete is False
+
+    def test_missing_value_makes_window_incomplete(self, usrec):
+        usrec = usrec.copy()
+        usrec.iloc[8] = np.nan
+        assert recession_after(usrec, "2020-06-01", months=3).complete is False
+
+    def test_date_before_the_data_is_incomplete(self, usrec):
+        result = recession_after(usrec, "2019-11-01", months=3)
+        assert result.first_recession_month is None
+        assert result.complete is False
+
+    def test_accepts_date_objects(self, usrec):
+        result = recession_after(usrec, date(2020, 2, 1), months=6)
+        assert result.first_recession_month == ts("2020-05-01")
+
+    def test_result_is_immutable(self, usrec):
+        result = recession_after(usrec, "2020-02-01")
+        with pytest.raises(AttributeError):
+            result.complete = True
+
+    @pytest.mark.parametrize("months_value", [0, -3])
+    def test_rejects_months_below_one(self, usrec, months_value):
+        with pytest.raises(ValueError, match="at least 1"):
+            recession_after(usrec, "2020-01-01", months=months_value)
+
+    def test_rejects_non_integer_months(self, usrec):
+        with pytest.raises(TypeError, match="integer"):
+            recession_after(usrec, "2020-01-01", months=2.0)
+
+    @pytest.mark.parametrize("when", [None, 2020])
+    def test_rejects_invalid_when_type(self, usrec, when):
+        with pytest.raises(TypeError):
+            recession_after(usrec, when)
+
+    def test_rejects_invalid_when_string(self, usrec):
+        with pytest.raises(ValueError, match="not a valid date"):
+            recession_after(usrec, "someday")
+
+    def test_rejects_invalid_indicator(self, usrec):
+        with pytest.raises(ValueError, match="0, 1"):
+            recession_after(usrec * 2, "2020-01-01")

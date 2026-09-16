@@ -3,33 +3,41 @@ from datetime import date
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from loaders import INVERSION_COLOR, SERIES_COLOR, get_yields, show_data_source
+from charts import INVERSION_COLOR, SERIES_COLOR
+from loaders import (
+    get_recession_indicator,
+    get_yields,
+    show_data_source,
+)
 
-from yield_curve.features import MATURITY_YEARS, yield_curve_on
+from yield_curve.features import MATURITY_YEARS, recession_after, yield_curve_on
 
 st.set_page_config(page_title="Understand the curve", page_icon="📈")
 show_data_source()
 
 MONTH_KEY = "curve_month"
-# Notable months, with what happened next.
-NOTABLE_MONTHS: dict[str, tuple[date, str]] = {
-    "Dot-com bubble": (
-        date(2000, 6, 1),
-        "A recession started in March 2001, after the dot-com crash.",
-    ),
-    "Before the financial crisis": (
-        date(2006, 12, 1),
-        "A recession started in January 2008 and lasted until June 2009.",
-    ),
-    "Before Covid": (
-        date(2019, 8, 1),
-        "A short recession hit in March–April 2020, caused by the pandemic.",
-    ),
-    "Record inversion": (
-        date(2023, 6, 1),
-        "No recession had been declared by the end of the data: a false alarm so far.",
-    ),
+# Notable months. What happened next is computed from the recession data.
+NOTABLE_MONTHS: dict[str, date] = {
+    "Dot-com bubble": date(2000, 6, 1),
+    "Before the financial crisis": date(2006, 12, 1),
+    "Before Covid": date(2019, 8, 1),
+    "Record inversion": date(2023, 6, 1),
 }
+FOLLOW_UP_MONTHS = 24
+
+
+def describe_what_happened_next(month: date, usrec: pd.Series) -> str:
+    after = recession_after(usrec, month, months=FOLLOW_UP_MONTHS)
+    if after.first_recession_month is not None:
+        return (
+            f"A recession started in {after.first_recession_month:%B %Y}, "
+            f"{after.months_later} months later."
+        )
+    if after.complete:
+        return f"No recession in the {FOLLOW_UP_MONTHS} months that followed."
+    last_known = usrec.dropna().index[-1]
+    return f"No recession so far (recession data ends in {last_known:%B %Y})."
+
 
 st.title("Understand the yield curve")
 st.markdown(
@@ -62,7 +70,8 @@ def pick_month(month: date) -> None:
 
 
 st.subheader("Jump to a notable moment")
-for column, (label, (month, what_next)) in zip(
+usrec = get_recession_indicator()
+for column, (label, month) in zip(
     st.columns(len(NOTABLE_MONTHS)), NOTABLE_MONTHS.items(), strict=True
 ):
     column.button(
@@ -72,7 +81,7 @@ for column, (label, (month, what_next)) in zip(
         args=(month,),
         width="stretch",
     )
-    column.caption(what_next)
+    column.caption(describe_what_happened_next(month, usrec))
 
 selected = st.select_slider(
     "Or pick any month",
