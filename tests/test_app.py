@@ -103,3 +103,44 @@ def test_signal_chart_uses_a_date_axis():
     (chart,) = app.get("plotly_chart")
     layout = json.loads(chart.proto.spec)["layout"]
     assert layout["xaxis"]["type"] == "date"
+
+
+def test_model_page_runs():
+    app = run_home()
+    app.switch_page("pages/3_The_model.py").run()
+
+    assert not app.exception
+    readings, count = app.metric[:-1], app.metric[-1]
+    assert readings[0].label.startswith("Recession within 12 months, based on ")
+    # A second reading only appears when the data ends in the middle of a month.
+    for partial in readings[1:]:
+        assert partial.label.startswith("So far in ")
+        assert partial.label.endswith("(partial data)")
+    for reading in readings:
+        assert 0 <= int(reading.value.rstrip("%")) <= 100
+    assert count.label == "Recession months in the test period"
+    assert len(app.table) == 1
+
+
+def test_model_chart_marks_the_out_of_sample_period():
+    app = run_home()
+    app.switch_page("pages/3_The_model.py").run()
+
+    (chart,) = app.get("plotly_chart")
+    layout = json.loads(chart.proto.spec)["layout"]
+    assert layout["xaxis"]["type"] == "date"
+    annotations = [annotation["text"] for annotation in layout["annotations"]]
+    assert "Right of this line: years the model never saw" in annotations
+    assert layout["yaxis"]["range"] == [0, 1]
+
+
+def test_data_and_method_page_runs():
+    app = run_home()
+    app.switch_page("pages/4_Data_and_method.py").run()
+
+    assert not app.exception
+    text = " ".join(element.value for element in app.markdown)
+    assert "https://fred.stlouisfed.org/" in text
+    assert "https://www.nber.org/" in text
+    assert "embargo" in text
+    assert "Not financial advice" in app.warning[0].value
