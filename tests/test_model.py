@@ -3,13 +3,19 @@ from datetime import date
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.linear_model import LogisticRegression
 
 from yield_curve.model import (
     DEFAULT_CUTOFF,
     DEFAULT_HORIZON,
     FEATURE,
     TARGET,
+    Evaluation,
     build_dataset,
+    evaluate,
+    fit_evaluation_model,
+    fit_model,
+    predict_probability,
     time_split,
 )
 
@@ -244,3 +250,156 @@ class TestTimeSplit:
     def test_rejects_invalid_horizon(self, dataset, horizon, error):
         with pytest.raises(error):
             time_split(dataset, horizon=horizon)
+
+
+# --- fit_model / predict_probability -------------------------------------------
+
+
+class TestFitAndPredict:
+    def test_is_deterministic(self, dataset):
+        first = fit_model(dataset)
+        second = fit_model(dataset)
+
+        np.testing.assert_array_equal(first.coef_, second.coef_)
+        np.testing.assert_array_equal(first.intercept_, second.intercept_)
+        pd.testing.assert_series_equal(
+            predict_probability(first, dataset[FEATURE]),
+            predict_probability(second, dataset[FEATURE]),
+        )
+
+    def test_probabilities_are_between_0_and_1(self, dataset):
+        model = fit_model(dataset)
+        extreme = pd.Series([-50.0, -1.0, 0.0, 1.0, 50.0])
+
+        probability = predict_probability(model, pd.concat([dataset[FEATURE], extreme]))
+
+        assert probability.between(0, 1).all()
+        assert probability.name == "probability"
+
+    def test_lower_spread_gives_higher_probability(self, dataset):
+        model = fit_model(dataset)
+        spreads = pd.Series([3.0, 2.0, 1.0, 0.0, -1.0])
+
+        probability = predict_probability(model, spreads)
+
+        assert probability.is_monotonic_increasing
+        assert probability.iloc[-1] > probability.iloc[0]
+        assert model.coef_[0, 0] < 0
+
+    def test_keeps_index_and_gives_nan_for_missing_spread(self, dataset):
+        model = fit_model(dataset)
+        spread = pd.Series([1.0, np.nan], index=pd.to_datetime(["2020-01", "2020-02"]))
+
+        probability = predict_probability(model, spread)
+
+        pd.testing.assert_index_equal(probability.index, spread.index)
+        assert 0 <= probability.iloc[0] <= 1
+        assert np.isnan(probability.iloc[1])
+
+    def test_empty_spread_gives_empty_result(self, dataset):
+        model = fit_model(dataset)
+        assert predict_probability(model, pd.Series([], dtype="float64")).empty
+
+    def test_does_not_modify_training_data(self, dataset):
+        before = dataset.copy()
+        fit_model(dataset)
+        pd.testing.assert_frame_equal(dataset, before)
+
+    def test_fit_rejects_single_class(self, dataset):
+        only_negative = dataset[dataset[TARGET] == 0]
+        with pytest.raises(ValueError, match="only one class"):
+            fit_model(only_negative)
+
+    def test_fit_rejects_empty(self, dataset):
+        with pytest.raises(ValueError, match="empty"):
+            fit_model(dataset.iloc[0:0])
+
+    def test_fit_rejects_non_dataframe(self, dataset):
+        with pytest.raises(TypeError, match="DataFrame"):
+            fit_model(dataset.to_numpy())
+
+    def test_predict_rejects_other_model_types(self, dataset):
+        with pytest.raises(TypeError, match="LogisticRegression"):
+            predict_probability("model", dataset[FEATURE])
+
+    def test_predict_rejects_unfitted_model(self, dataset):
+        with pytest.raises(ValueError, match="not been fitted"):
+            predict_probability(LogisticRegression(), dataset[FEATURE])
+
+    def test_predict_rejects_non_series(self, dataset):
+        with pytest.raises(TypeError, match="pandas Series"):
+            predict_probability(fit_model(dataset), [1.0, 2.0])
+
+
+# --- evaluate ------------------------------------------------------------------
+
+
+class TestEvaluate:
+    def test_reports_split_details(self, dataset):
+        result = evaluate(dataset)
+
+        assert isinstance(result, Evaluation)
+        assert result.train_start == dataset.index[0]
+        assert result.train_end == ts("2005-12-01")
+        assert result.test_start == ts("2007-01-01")
+        assert result.test_end == dataset.index[-1]
+        assert result.n_train == len(dataset.loc[:"2005-12"])
+        assert result.n_test == len(dataset.loc["2007-01":])
+        assert result.n_test_positive == int(dataset.loc["2007-01":, TARGET].sum())
+
+    def test_baseline_uses_training_base_rate(self, dataset):
+        result = evaluate(dataset)
+
+        train_rate = dataset.loc[:"2005-12", TARGET].mean()
+        test_target = dataset.loc["2007-01":, TARGET]
+        assert result.base_rate == pytest.approx(train_rate)
+        assert result.baseline_auc == 0.5
+        assert result.baseline_brier == pytest.approx(
+            ((test_target - train_rate) ** 2).mean()
+        )
+
+    def test_scores_are_in_valid_ranges(self, dataset):
+        result = evaluate(dataset)
+        assert 0 <= result.model_auc <= 1
+        assert 0 <= result.model_brier <= 1
+
+    def test_model_beats_baseline_on_informative_data(self, dataset):
+        result = evaluate(dataset)
+        assert result.model_auc > 0.9
+        assert result.model_brier < result.baseline_brier
+
+    def test_is_deterministic(self, dataset):
+        assert evaluate(dataset) == evaluate(dataset)
+
+    def test_scores_only_depend_on_training_rows_for_fitting(self, dataset):
+        # Changing test-period features must not change the fitted model.
+        altered = dataset.copy()
+        altered.loc["2007-01":, FEATURE] = 99.0
+        original = fit_evaluation_model(dataset)
+        refit = fit_evaluation_model(altered)
+        np.testing.assert_array_equal(original.coef_, refit.coef_)
+
+    def test_embargoed_rows_are_not_used_for_fitting(self, dataset):
+        altered = dataset.copy()
+        altered.loc["2006-01":"2006-12", FEATURE] = -99.0
+        np.testing.assert_array_equal(
+            fit_evaluation_model(dataset).coef_, fit_evaluation_model(altered).coef_
+        )
+
+    def test_custom_cutoff(self, dataset):
+        result = evaluate(dataset, cutoff="2010-06")
+        assert result.train_end == ts("2009-06-01")
+        assert result.test_start == ts("2010-07-01")
+
+    def test_result_is_immutable(self, dataset):
+        result = evaluate(dataset)
+        with pytest.raises(AttributeError):
+            result.model_auc = 1.0
+
+    def test_invalid_split_raises(self, dataset):
+        with pytest.raises(ValueError, match="test set has only one class"):
+            evaluate(dataset, cutoff="2014-12")
+
+    def test_fit_evaluation_model_invalid_split_raises(self, dataset):
+        with pytest.raises(ValueError, match="training set is empty"):
+            fit_evaluation_model(dataset, cutoff="1990-01")
