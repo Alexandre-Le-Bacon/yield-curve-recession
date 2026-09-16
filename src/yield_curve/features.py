@@ -6,7 +6,26 @@ their inputs, and return new objects.
 
 import pandas as pd
 
+from yield_curve.data import DateLike, _to_timestamp
+
 Period = tuple[pd.Timestamp, pd.Timestamp]
+
+# Treasury yield series, from shortest to longest maturity, with a short label.
+YIELD_CURVE_SERIES: dict[str, str] = {
+    "DGS3MO": "3M",
+    "DGS2": "2Y",
+    "DGS5": "5Y",
+    "DGS10": "10Y",
+    "DGS30": "30Y",
+}
+# Maturity of each label in years, e.g. for the x-axis of a yield curve chart.
+MATURITY_YEARS: dict[str, float] = {
+    "3M": 0.25,
+    "2Y": 2.0,
+    "5Y": 5.0,
+    "10Y": 10.0,
+    "30Y": 30.0,
+}
 
 
 def _validate_dated_series(series: object, name: str) -> pd.Series:
@@ -203,3 +222,61 @@ def recession_within_horizon(usrec: pd.Series, horizon: int = 12) -> pd.Series:
     forward_max = full[::-1].rolling(horizon, min_periods=horizon).max()[::-1]
     target = forward_max.shift(-1)
     return target.reindex(usrec.index).rename(name)
+
+
+def yield_curve_on(
+    yields: pd.DataFrame, when: DateLike
+) -> tuple[pd.Timestamp, pd.Series]:
+    """Get the yield curve on a date, or on the closest previous available date.
+
+    The function uses the most recent row on or before ``when`` that has at least
+    one yield. Maturities missing on that row are left out (for example, the
+    30-year bond was not issued between 2002 and 2006).
+
+    Args:
+        yields: DataFrame indexed by a sorted ``DatetimeIndex``, with the columns
+            of ``YIELD_CURVE_SERIES`` (``DGS3MO``, ``DGS2``, ``DGS5``, ``DGS10``,
+            ``DGS30``), in percent. Other columns are ignored.
+        when: Requested date (string, date, datetime or Timestamp).
+
+    Returns:
+        A tuple ``(as_of, curve)``: ``as_of`` is the date actually used, and
+        ``curve`` a float series of yields named ``"yield"``, indexed by
+        maturity label (``"3M"``, ``"2Y"``, ...) from shortest to longest.
+
+    Raises:
+        TypeError: If ``yields`` is not a DataFrame indexed by dates, or ``when``
+            has an unsupported type.
+        ValueError: If a yield column is missing, the dates are unsorted or
+            duplicated, ``when`` is not a valid date, or no yield is available on
+            or before ``when``.
+    """
+    if not isinstance(yields, pd.DataFrame):
+        raise TypeError(
+            f"yields must be a pandas DataFrame, got {type(yields).__name__}."
+        )
+    if not isinstance(yields.index, pd.DatetimeIndex):
+        raise TypeError(
+            "yields must be indexed by a DatetimeIndex, "
+            f"got {type(yields.index).__name__}."
+        )
+    missing = [column for column in YIELD_CURVE_SERIES if column not in yields]
+    if missing:
+        raise ValueError(f"yields is missing the columns {missing}.")
+    if yields.index.has_duplicates:
+        raise ValueError("yields has duplicate dates.")
+    if not yields.index.is_monotonic_increasing:
+        raise ValueError("yields must be sorted by date.")
+    if when is None:
+        raise TypeError("when must be a date, got None.")
+    timestamp = _to_timestamp(when, "when")
+
+    available = yields.loc[yields.index <= timestamp, list(YIELD_CURVE_SERIES)]
+    available = available.dropna(how="all")
+    if available.empty:
+        raise ValueError(f"No yield data on or before {timestamp.date()}.")
+
+    as_of = available.index[-1]
+    curve = available.iloc[-1].rename(YIELD_CURVE_SERIES).dropna().astype("float64")
+    curve.index.name = "maturity"
+    return as_of, curve.rename("yield")
