@@ -11,6 +11,7 @@ from yield_curve.data import (
     SERIES_IDS,
     filter_by_date,
     get_default_data_dir,
+    load_download_date,
     load_series,
     load_series_frame,
     parse_fred_csv,
@@ -262,6 +263,56 @@ class TestLoadSeriesFrame:
     def test_missing_file_raises(self, fixtures_dir):
         with pytest.raises(FileNotFoundError, match="DGS30"):
             load_series_frame(["USREC", "DGS30"], data_dir=fixtures_dir)
+
+
+# --- load_download_date ---------------------------------------------------------
+
+
+class TestLoadDownloadDate:
+    def write_metadata(self, directory: Path, content: str) -> Path:
+        (directory / "metadata.json").write_text(content, encoding="utf-8")
+        return directory
+
+    def test_reads_date_from_timestamp(self, tmp_path):
+        self.write_metadata(tmp_path, '{"downloaded_at": "2026-09-16T21:49:06+00:00"}')
+        assert load_download_date(tmp_path) == date(2026, 9, 16)
+
+    def test_accepts_plain_date_and_str_path(self, tmp_path):
+        self.write_metadata(tmp_path, '{"downloaded_at": "2024-01-31"}')
+        assert load_download_date(str(tmp_path)) == date(2024, 1, 31)
+
+    def test_uses_default_data_dir(self, monkeypatch, tmp_path):
+        self.write_metadata(tmp_path, '{"downloaded_at": "2025-05-05T00:00:00"}')
+        monkeypatch.setenv(DATA_DIR_ENV_VAR, str(tmp_path))
+        assert load_download_date() == date(2025, 5, 5)
+
+    def test_committed_metadata_is_readable(self):
+        assert load_download_date() >= date(2026, 1, 1)
+
+    def test_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="download_data.py"):
+            load_download_date(tmp_path)
+
+    def test_invalid_json_raises(self, tmp_path):
+        self.write_metadata(tmp_path, "{not json")
+        with pytest.raises(ValueError, match="not valid JSON"):
+            load_download_date(tmp_path)
+
+    def test_non_object_json_raises(self, tmp_path):
+        self.write_metadata(tmp_path, '["2026-09-16"]')
+        with pytest.raises(ValueError, match="JSON object"):
+            load_download_date(tmp_path)
+
+    @pytest.mark.parametrize("content", ["{}", '{"downloaded_at": 20260916}'])
+    def test_missing_timestamp_raises(self, tmp_path, content):
+        self.write_metadata(tmp_path, content)
+        with pytest.raises(ValueError, match="no 'downloaded_at'"):
+            load_download_date(tmp_path)
+
+    def test_invalid_timestamp_raises(self, tmp_path):
+        self.write_metadata(tmp_path, '{"downloaded_at": "yesterday"}')
+        with pytest.raises(ValueError, match="Invalid 'downloaded_at'"):
+            load_download_date(tmp_path)
 
 
 # --- filter_by_date -------------------------------------------------------------
