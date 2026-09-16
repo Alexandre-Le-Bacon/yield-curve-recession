@@ -25,7 +25,7 @@ a simple model estimating the probability of a recession within the next 12 mont
 | Tests and continuous integration        | ✅ done          |
 | Features: spread, inversions, target    | ✅ done          |
 | Exploration pages (app v0)              | ✅ done          |
-| Recession probability model             | 🚧 coming next  |
+| Recession probability model and method  | ✅ done          |
 | Docker image                            | 🚧 coming next  |
 
 ## Quick start
@@ -55,11 +55,46 @@ shared `app/loaders.py`.
 | Page                    | What it shows |
 | ----------------------- | ------------- |
 | **Home**                | The question, a short explanation for non-finance readers, and key facts: data range, number of yield curve inversions (lasting at least 3 months) and number of recessions since 1982. |
-| **Understand the curve**| The shape of the yield curve (3-month to 30-year yields) for any month since 1982, labelled *normal* or *inverted*. Buttons jump to notable moments (dot-com bubble, before the financial crisis, before Covid, record inversion) with what happened next. |
+| **Understand the curve**| The shape of the yield curve (3-month to 30-year yields) for any month since 1982, labelled *normal* or *inverted*. Buttons jump to notable moments (dot-com bubble, before the financial crisis, before Covid, record inversion), each with what happened in the next 24 months, computed from the recession data. |
 | **The signal**          | The 10-year minus 3-month spread over time, with a zero line, recessions shaded in grey and inversion episodes in orange. Sliders filter the date range and set the minimum length of an inversion (1 to 6 months). |
+| **The model**           | Today's 12-month recession probability (last complete month, plus the month in progress shown separately), a chart of the probability over time from a model that never saw the years after 2006, and its evaluation against a naive baseline. |
+| **Data and method**     | Data sources with links, download date, target definition, train/test split with embargo, limitations, a *not financial advice* note, and how to reproduce the results. |
 
 The sidebar shows when the data was downloaded from FRED. Data loading is cached
 with `st.cache_data`, so the CSV files are read once per server process.
+
+## Model and method
+
+The question the model answers: *given the spread this month, what is the probability
+that a recession month occurs within the next 12 months?*
+
+- **Feature:** the monthly average of the daily 10-year minus 3-month spread.
+- **Target:** 1 if at least one month in `(t, t+12]` is a recession month (USREC),
+  else 0. The last 12 months of recession data have no known target and are dropped,
+  never filled with 0 (no look-ahead).
+- **Model:** scikit-learn `LogisticRegression` with a fixed `random_state`.
+- **Split:** by time, never shuffled. The cutoff month is 2006-12: training uses
+  months up to 2005-12, testing starts in 2007-01. The 12 months in between are an
+  **embargo**: their targets depend on recessions after the cutoff, so using them for
+  training would leak future information. The embargo length follows the horizon.
+- **Evaluation:** ROC AUC and Brier score on the test period, against a naive
+  baseline that always predicts the training base rate.
+- **Current reading:** a separate model refitted on all labelled months, applied to
+  the last complete month; the month in progress is reported apart.
+
+Results with the committed snapshot (downloaded 2026-09-16), test period
+Jan 2007 – Aug 2025:
+
+| Metric                          | Model | Naive baseline |
+| ------------------------------- | ----- | -------------- |
+| ROC AUC (higher is better)      | 0.59  | 0.50           |
+| Brier score (lower is better)   | 0.190 | 0.153          |
+
+The model ranks months better than chance, but its probabilities are less accurate
+than the baseline. These scores rest on only two recessions (2008–2009 and 2020), and
+the long 2022–2024 inversion was not followed by a recession. The app states this
+openly: the spread is a warning signal, not a precise forecast. This is not financial
+advice.
 
 ## Development
 
@@ -73,8 +108,9 @@ uv run pytest --cov=src              # tests + coverage (fails below 90%)
 
 The test suite has two parts:
 
-- `tests/test_data.py`, `tests/test_features.py`: unit tests of the pure functions
-  in `src/`, on small synthetic data.
+- `tests/test_data.py`, `tests/test_features.py`, `tests/test_model.py`: unit tests
+  of the pure functions in `src/`, on small synthetic data (plus one check that the
+  committed snapshots load and the default model runs).
 - `tests/test_app.py`: smoke tests that run every page with Streamlit's `AppTest`,
   starting from `app/Home.py` like `streamlit run` does, on the committed snapshots.
 
@@ -112,12 +148,14 @@ environment variable to use another directory.
 ```
 app/                     Streamlit UI, no business logic
   Home.py                  entry point: question, explanation, key facts
-  loaders.py               cached data loading shared by the pages
+  loaders.py               cached data loading and model results shared by the pages
+  charts.py                shared Plotly chart style (date axis, shaded periods)
   pages/                   one file per page
 src/yield_curve/         Pure Python logic, no Streamlit imports
   data.py                  load, merge and filter FRED series; download date
   features.py              monthly spread, inversions, recession periods and target
-  model.py                 recession probability model (coming next)
+  model.py                 dataset, time split with embargo, logistic regression,
+                           evaluation and current reading
 scripts/download_data.py Refresh the CSV snapshots from FRED
 data/raw/                Committed CSV snapshots + metadata.json
 tests/                   pytest suite (no network access)
