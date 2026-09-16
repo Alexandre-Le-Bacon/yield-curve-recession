@@ -10,8 +10,10 @@ from yield_curve.model import (
     DEFAULT_HORIZON,
     FEATURE,
     TARGET,
+    CurrentReading,
     Evaluation,
     build_dataset,
+    current_reading,
     evaluate,
     fit_evaluation_model,
     fit_model,
@@ -403,3 +405,95 @@ class TestEvaluate:
     def test_fit_evaluation_model_invalid_split_raises(self, dataset):
         with pytest.raises(ValueError, match="training set is empty"):
             fit_evaluation_model(dataset, cutoff="1990-01")
+
+
+# --- current_reading -----------------------------------------------------------
+
+
+class TestCurrentReading:
+    @pytest.fixture
+    def partial_spread(self, usrec) -> pd.Series:
+        # Spread data runs until mid-February 2017, after the end of USREC.
+        return make_daily_spread(make_usrec(end="2017-02"), end="2017-02-15")
+
+    def test_headline_is_the_last_complete_month(self, partial_spread, usrec):
+        result = current_reading(partial_spread, usrec)
+
+        assert isinstance(result, CurrentReading)
+        assert result.latest_complete.month == ts("2017-01-01")
+        assert result.data_until == ts("2017-02-15")
+
+    def test_in_progress_month_is_reported_separately(self, partial_spread, usrec):
+        result = current_reading(partial_spread, usrec)
+
+        assert result.in_progress is not None
+        assert result.in_progress.month == ts("2017-02-01")
+        february = partial_spread.loc["2017-02"].mean()
+        assert result.in_progress.spread == pytest.approx(february)
+
+    def test_no_in_progress_month_when_data_ends_on_month_end(
+        self, daily_spread, usrec
+    ):
+        result = current_reading(daily_spread, usrec)
+
+        assert result.latest_complete.month == ts("2016-12-01")
+        assert result.in_progress is None
+
+    def test_uses_a_model_fitted_on_all_labelled_months(self, partial_spread, usrec):
+        result = current_reading(partial_spread, usrec)
+        dataset = build_dataset(partial_spread, usrec)
+
+        assert result.trained_from == dataset.index[0]
+        assert result.trained_until == dataset.index[-1] == ts("2015-12-01")
+        expected = predict_probability(
+            fit_model(dataset), pd.Series([result.latest_complete.spread])
+        ).iloc[0]
+        assert result.latest_complete.probability == pytest.approx(expected)
+
+    def test_reading_month_has_no_known_target(self, partial_spread, usrec):
+        result = current_reading(partial_spread, usrec)
+        assert result.latest_complete.month > result.trained_until
+
+    def test_probabilities_are_between_0_and_1(self, partial_spread, usrec):
+        result = current_reading(partial_spread, usrec)
+        assert 0 <= result.latest_complete.probability <= 1
+        assert 0 <= result.in_progress.probability <= 1
+
+    def test_is_deterministic(self, partial_spread, usrec):
+        assert current_reading(partial_spread, usrec) == current_reading(
+            partial_spread, usrec
+        )
+
+    def test_missing_complete_month_raises(self, partial_spread, usrec):
+        daily = partial_spread.copy()
+        daily.loc["2017-01"] = np.nan
+        # The last valid day is in February: January is complete but has no data.
+        with pytest.raises(ValueError, match="last complete month"):
+            current_reading(daily, usrec)
+
+    def test_single_class_raises(self, partial_spread, usrec):
+        with pytest.raises(ValueError, match="only one class"):
+            current_reading(partial_spread, usrec * 0)
+
+    def test_invalid_input_raises(self, usrec):
+        with pytest.raises(TypeError):
+            current_reading("T10Y3M", usrec)
+
+
+# --- committed snapshots --------------------------------------------------------
+
+
+def test_default_evaluation_and_reading_run_on_committed_snapshots():
+    from yield_curve.data import load_series
+
+    daily_spread, usrec = load_series("T10Y3M"), load_series("USREC")
+    dataset = build_dataset(daily_spread, usrec)
+
+    result = evaluate(dataset)
+    reading = current_reading(daily_spread, usrec)
+
+    assert result.train_end == ts("2005-12-01")
+    assert result.test_start == ts("2007-01-01")
+    assert result.n_test_positive > 0
+    assert 0 <= reading.latest_complete.probability <= 1
+    assert reading.latest_complete.month > reading.trained_until
