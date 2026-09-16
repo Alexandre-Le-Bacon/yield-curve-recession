@@ -8,6 +8,7 @@ import pytest
 from yield_curve import data as data_module
 from yield_curve.data import (
     DATA_DIR_ENV_VAR,
+    SERIES_IDS,
     filter_by_date,
     get_default_data_dir,
     load_series,
@@ -363,3 +364,15 @@ class TestFilterByDate:
     def test_non_datetime_index_raises(self):
         with pytest.raises(TypeError, match="DatetimeIndex"):
             filter_by_date(pd.Series([1, 2, 3]), "2020-01-01")
+
+
+# --- committed snapshots --------------------------------------------------------
+
+
+def test_committed_snapshots_load():
+    frame = load_series_frame(SERIES_IDS, data_dir=REPO_ROOT / "data" / "raw")
+
+    assert list(frame.columns) == list(SERIES_IDS)
+    assert frame.index.min() < pd.Timestamp("1990-01-01")
+    assert (frame.notna().sum() > 1000).all()
+    assert set(frame["USREC"].dropna().unique()) <= {0.0, 1.0}

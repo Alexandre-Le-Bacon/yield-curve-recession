@@ -1,0 +1,48 @@
+{
+  "source": "FRED, Federal Reserve Bank of St. Louis",
+  "downloaded_at": "2026-09-16T21:49:06+00:00",
+  "series": {
+    "T10Y3M": {
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y3M",
+      "observations": 11179,
+      "first_date": "1982-01-04",
+      "last_date": "2026-09-16"
+    },
+    "USREC": {
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=USREC",
+      "observations": 2061,
+      "first_date": "1854-12-01",
+      "last_date": "2026-08-01"
+    },
+    "DGS3MO": {
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO",
+      "observations": 11259,
+      "first_date": "1981-09-01",
+      "last_date": "2026-09-15"
+    },
+    "DGS2": {
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS2",
+      "observations": 12569,
+      "first_date": "1976-06-01",
+      "last_date": "2026-09-15"
+    },
+    "DGS5": {
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS5",
+      "observations": 16161,
+      "first_date": "1962-01-02",
+      "last_date": "2026-09-15"
+    },
+    "DGS10": {
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS10",
+      "observations": 16161,
+      "first_date": "1962-01-02",
+      "last_date": "2026-09-15"
+    },
+    "DGS30": {
+      "url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS30",
+      "observations": 12391,
+      "first_date": "1977-02-15",
+      "last_date": "2026-09-15"
+    }
+  }
+}
