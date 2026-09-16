@@ -15,6 +15,7 @@ from sklearn.utils.validation import check_is_fitted
 from yield_curve.data import DateLike, _to_timestamp
 from yield_curve.features import (
     _validate_positive_int,
+    last_complete_month,
     monthly_spread,
     recession_within_horizon,
 )
@@ -305,4 +306,92 @@ def evaluate(
         n_train=len(train),
         n_test=len(test),
         n_test_positive=int(actual.sum()),
+    )
+
+
+@dataclass(frozen=True)
+class MonthReading:
+    """Model output for one month.
+
+    Attributes:
+        month: First day of the month.
+        spread: Average 10Y-3M spread over the available days of the month.
+        probability: Predicted probability of a recession within the horizon.
+    """
+
+    month: pd.Timestamp
+    spread: float
+    probability: float
+
+
+@dataclass(frozen=True)
+class CurrentReading:
+    """Today's reading of the model, fitted on all labelled months.
+
+    Attributes:
+        latest_complete: Reading for the last complete month (the headline).
+        in_progress: Reading for the current, incomplete month, or ``None`` when
+            the last month of data is complete.
+        data_until: Date of the last valid daily spread observation.
+        trained_from: First month used for training.
+        trained_until: Last month used for training (last month with a known
+            target).
+    """
+
+    latest_complete: MonthReading
+    in_progress: MonthReading | None
+    data_until: pd.Timestamp
+    trained_from: pd.Timestamp
+    trained_until: pd.Timestamp
+
+
+def current_reading(
+    daily_spread: pd.Series, usrec: pd.Series, horizon: int = DEFAULT_HORIZON
+) -> CurrentReading:
+    """Estimate today's recession probability, separately from the evaluation.
+
+    Unlike ``evaluate``, the model is refitted on **all** months with a known
+    target, then applied to the most recent months, whose target is not known yet.
+    The headline uses the last complete month (see ``last_complete_month``); the
+    current month, if its data is partial, is reported separately.
+
+    Args:
+        daily_spread: Daily 10Y-3M spread (``T10Y3M``), indexed by date.
+        usrec: Monthly NBER recession indicator (``USREC``), indexed by month
+            starts, with values 0, 1 or ``NaN``.
+        horizon: Number of months ahead the target looks at. Defaults to 12.
+
+    Returns:
+        A ``CurrentReading`` with the readings and the training period.
+
+    Raises:
+        TypeError: If an input has the wrong type.
+        ValueError: If an input is malformed, the labelled data is empty or has
+            one class only, or the last complete month has no spread value.
+    """
+    dataset = build_dataset(daily_spread, usrec, horizon)
+    model = fit_model(dataset)
+
+    monthly = monthly_spread(daily_spread).dropna()
+    probability = predict_probability(model, monthly)
+    complete_month = last_complete_month(daily_spread)
+    if complete_month not in monthly.index:
+        raise ValueError(
+            f"No spread data for the last complete month ({complete_month:%Y-%m})."
+        )
+
+    def reading(month: pd.Timestamp) -> MonthReading:
+        return MonthReading(
+            month=month,
+            spread=float(monthly.loc[month]),
+            probability=float(probability.loc[month]),
+        )
+
+    latest_month = monthly.index[-1]
+    return CurrentReading(
+        latest_complete=reading(complete_month),
+        in_progress=reading(latest_month) if latest_month > complete_month else None,
+        data_until=daily_spread.dropna().index[-1],
+        trained_from=dataset.index[0],
+        trained_until=dataset.index[-1],
     )
