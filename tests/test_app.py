@@ -5,6 +5,7 @@ does, so the ``from loaders import ...`` lines are tested in the same conditions
 in production. The pages read the committed snapshots in ``data/raw/`` (no network).
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -89,3 +90,13 @@ def test_min_months_slider_changes_the_episode_count():
 
     assert not app.exception
     assert int(app.metric[0].value) > default_count
+
+
+def test_signal_chart_uses_a_date_axis():
+    # Regression: legend-only traces made Plotly pick a numeric axis (empty chart).
+    app = run_home()
+    app.switch_page("pages/2_The_signal.py").run()
+
+    (chart,) = app.get("plotly_chart")
+    layout = json.loads(chart.proto.spec)["layout"]
+    assert layout["xaxis"]["type"] == "date"

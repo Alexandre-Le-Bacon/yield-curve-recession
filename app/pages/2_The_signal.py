@@ -97,7 +97,8 @@ figure.add_trace(
 figure.add_hline(y=0, line_dash="dash", line_width=1, line_color=RECESSION_COLOR)
 figure.update_layout(
     title="10-year minus 3-month Treasury spread (monthly average)",
-    xaxis_title=None,
+    # Explicit: the legend-only traces above have no dates for Plotly to infer from.
+    xaxis={"type": "date", "title": None},
     yaxis_title="Spread (percentage points)",
     hovermode="x unified",
     legend={"orientation": "h", "y": -0.12},
