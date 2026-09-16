@@ -41,10 +41,13 @@ col1, col2, col3 = st.columns(3)
 col1.metric("Data range", f"{first_month:%Y} – {last_month:%Y}")
 col2.metric("Yield curve inversions", len(episodes))
 col3.metric("Recessions", len(recessions))
+col3.caption(
+    f"Recessions that started after {first_month:%B %Y}, when the spread data "
+    "begins. The signal page also shades a recession already under way then."
+)
 st.caption(
     f"An inversion counts here only if the monthly spread stayed below zero for at "
-    f"least {DEFAULT_MIN_MONTHS} months in a row, to ignore short blips. Recessions "
-    f"are those that started after {first_month:%B %Y}."
+    f"least {DEFAULT_MIN_MONTHS} months in a row, to ignore short blips."
 )
 
 st.subheader("Explore")
