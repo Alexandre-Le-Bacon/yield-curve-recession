@@ -57,6 +57,9 @@ def test_understand_the_curve_page_runs():
     assert not app.exception
     assert app.select_slider(key="curve_month").value is not None
     assert len(app.button) == 4
+    captions = [caption.value for caption in app.caption]
+    assert "A recession started in January 2008, 13 months later." in captions
+    assert "No recession in the 24 months that followed." in captions
 
 
 def test_quick_pick_button_moves_the_month_slider():
