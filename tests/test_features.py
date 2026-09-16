@@ -1,13 +1,18 @@
+from datetime import date, datetime
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from yield_curve.features import (
+    MATURITY_YEARS,
+    YIELD_CURVE_SERIES,
     inversion_episodes,
     inversion_flag,
     monthly_spread,
     recession_periods,
     recession_within_horizon,
+    yield_curve_on,
 )
 
 
@@ -336,3 +341,110 @@ class TestRecessionWithinHorizon:
         usrec = months("2020-01-01", [0, 3], name="USREC")
         with pytest.raises(ValueError, match="0, 1"):
             recession_within_horizon(usrec)
+
+
+# --- yield_curve_on ------------------------------------------------------------
+
+
+@pytest.fixture
+def yields() -> pd.DataFrame:
+    """Three business days of Treasury yields, with gaps."""
+    index = pd.to_datetime(["2020-01-02", "2020-01-03", "2020-01-06"])
+    index.name = "date"
+    return pd.DataFrame(
+        {
+            "DGS3MO": [1.5, np.nan, 1.6],
+            "DGS2": [1.6, np.nan, 1.7],
+            "DGS5": [1.7, np.nan, 1.8],
+            "DGS10": [1.9, np.nan, 2.0],
+            "DGS30": [2.3, np.nan, np.nan],
+            "T10Y3M": [0.4, np.nan, 0.4],
+        },
+        index=index,
+    )
+
+
+class TestYieldCurveOn:
+    def test_constants_cover_every_maturity(self):
+        assert list(YIELD_CURVE_SERIES.values()) == list(MATURITY_YEARS)
+
+    def test_exact_date(self, yields):
+        as_of, curve = yield_curve_on(yields, "2020-01-02")
+
+        assert as_of == ts("2020-01-02")
+        expected = pd.Series(
+            [1.5, 1.6, 1.7, 1.9, 2.3],
+            index=pd.Index(["3M", "2Y", "5Y", "10Y", "30Y"], name="maturity"),
+            name="yield",
+        )
+        pd.testing.assert_series_equal(curve, expected)
+
+    def test_uses_closest_previous_date_when_no_row(self, yields):
+        # 2020-01-04 is a Saturday: not in the data.
+        as_of, _ = yield_curve_on(yields, "2020-01-04")
+        assert as_of == ts("2020-01-02")
+
+    def test_skips_rows_with_only_missing_yields(self, yields):
+        as_of, _ = yield_curve_on(yields, "2020-01-03")
+        assert as_of == ts("2020-01-02")
+
+    def test_drops_missing_maturities(self, yields):
+        as_of, curve = yield_curve_on(yields, "2020-01-06")
+
+        assert as_of == ts("2020-01-06")
+        assert list(curve.index) == ["3M", "2Y", "5Y", "10Y"]
+
+    def test_date_after_the_data_uses_last_row(self, yields):
+        as_of, _ = yield_curve_on(yields, "2030-01-01")
+        assert as_of == ts("2020-01-06")
+
+    @pytest.mark.parametrize(
+        "when",
+        [date(2020, 1, 2), datetime(2020, 1, 2, 18, 0), pd.Timestamp("2020-01-02")],
+    )
+    def test_accepts_date_types(self, yields, when):
+        as_of, _ = yield_curve_on(yields, when)
+        assert as_of == ts("2020-01-02")
+
+    def test_does_not_modify_input(self, yields):
+        before = yields.copy()
+        yield_curve_on(yields, "2020-01-06")
+        pd.testing.assert_frame_equal(yields, before)
+
+    def test_date_before_the_data_raises(self, yields):
+        with pytest.raises(ValueError, match="No yield data"):
+            yield_curve_on(yields, "2019-12-31")
+
+    def test_empty_frame_raises(self, yields):
+        with pytest.raises(ValueError, match="No yield data"):
+            yield_curve_on(yields.iloc[0:0], "2020-01-02")
+
+    def test_missing_column_raises(self, yields):
+        with pytest.raises(ValueError, match="DGS30"):
+            yield_curve_on(yields.drop(columns="DGS30"), "2020-01-02")
+
+    def test_invalid_date_string_raises(self, yields):
+        with pytest.raises(ValueError, match="not a valid date"):
+            yield_curve_on(yields, "not-a-date")
+
+    @pytest.mark.parametrize("when", [None, 20200102])
+    def test_invalid_date_type_raises(self, yields, when):
+        with pytest.raises(TypeError):
+            yield_curve_on(yields, when)
+
+    def test_rejects_non_dataframe(self, yields):
+        with pytest.raises(TypeError, match="DataFrame"):
+            yield_curve_on(yields["DGS10"], "2020-01-02")
+
+    def test_rejects_non_datetime_index(self, yields):
+        with pytest.raises(TypeError, match="DatetimeIndex"):
+            yield_curve_on(yields.reset_index(drop=True), "2020-01-02")
+
+    def test_rejects_unsorted_dates(self, yields):
+        with pytest.raises(ValueError, match="sorted"):
+            yield_curve_on(yields.iloc[::-1], "2020-01-02")
+
+    def test_rejects_duplicate_dates(self, yields):
+        duplicated = pd.concat([yields.iloc[[0]], yields.iloc[[0]]])
+        with pytest.raises(ValueError, match="duplicate"):
+            yield_curve_on(duplicated, "2020-01-02")
