@@ -4,7 +4,13 @@ The model is a one-feature logistic regression: the monthly 10Y-3M spread at mon
 ``t`` predicts whether a recession month occurs in ``(t, t + horizon]``.
 """
 
+from dataclasses import dataclass
+
 import pandas as pd
+from sklearn.exceptions import NotFittedError
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import brier_score_loss, roc_auc_score
+from sklearn.utils.validation import check_is_fitted
 
 from yield_curve.data import DateLike, _to_timestamp
 from yield_curve.features import (
@@ -18,6 +24,7 @@ TARGET = "target"
 DEFAULT_HORIZON = 12
 # Last month of information available for training (see time_split).
 DEFAULT_CUTOFF = "2006-12"
+RANDOM_STATE = 0
 
 
 def build_dataset(
@@ -133,3 +140,169 @@ def time_split(
     _check_both_classes(train, "training")
     _check_both_classes(test, "test")
     return train, test
+
+
+def fit_model(train: pd.DataFrame) -> LogisticRegression:
+    """Fit a logistic regression of the target on the spread.
+
+    Args:
+        train: Training rows, e.g. the first output of ``time_split``.
+
+    Returns:
+        A fitted ``LogisticRegression`` with a fixed ``random_state``, so the
+        result is the same on every run.
+
+    Raises:
+        TypeError: If ``train`` is not a DataFrame indexed by dates.
+        ValueError: If ``train`` is malformed, empty, or has one class only.
+    """
+    train = _validate_dataset(train, "train")
+    _check_both_classes(train, "training")
+    model = LogisticRegression(random_state=RANDOM_STATE)
+    model.fit(train[[FEATURE]], train[TARGET].astype(int))
+    return model
+
+
+def predict_probability(model: LogisticRegression, spread: pd.Series) -> pd.Series:
+    """Predict the probability of a recession within the horizon for each month.
+
+    Args:
+        model: Model returned by ``fit_model``.
+        spread: Monthly spread values, e.g. ``dataset["spread"]`` or the output of
+            ``monthly_spread``.
+
+    Returns:
+        Float series with the same index as ``spread``, named ``"probability"``,
+        with values in [0, 1]. Months with a missing spread get ``NaN``.
+
+    Raises:
+        TypeError: If ``model`` is not a ``LogisticRegression`` or ``spread`` is
+            not a Series.
+        ValueError: If ``model`` has not been fitted.
+    """
+    if not isinstance(model, LogisticRegression):
+        raise TypeError(
+            f"model must be a LogisticRegression, got {type(model).__name__}."
+        )
+    try:
+        check_is_fitted(model)
+    except NotFittedError as error:
+        raise ValueError("model has not been fitted; use fit_model.") from error
+    if not isinstance(spread, pd.Series):
+        raise TypeError(f"spread must be a pandas Series, got {type(spread).__name__}.")
+
+    probability = pd.Series(float("nan"), index=spread.index, name="probability")
+    valid = spread.dropna()
+    if not valid.empty:
+        features = valid.astype("float64").to_frame(FEATURE)
+        probability.loc[valid.index] = model.predict_proba(features)[:, 1]
+    return probability
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    """Out-of-sample scores of the model and of the naive baseline.
+
+    Attributes:
+        model_auc: ROC AUC of the model on the test set.
+        model_brier: Brier score of the model on the test set.
+        baseline_auc: ROC AUC of the baseline (always 0.5: a constant prediction
+            cannot rank months).
+        baseline_brier: Brier score of the baseline on the test set.
+        base_rate: Share of positive targets in the training set, used as the
+            baseline prediction.
+        train_start: First training month.
+        train_end: Last training month.
+        test_start: First test month.
+        test_end: Last test month.
+        n_train: Number of training months.
+        n_test: Number of test months.
+        n_test_positive: Number of test months with a recession within the horizon.
+    """
+
+    model_auc: float
+    model_brier: float
+    baseline_auc: float
+    baseline_brier: float
+    base_rate: float
+    train_start: pd.Timestamp
+    train_end: pd.Timestamp
+    test_start: pd.Timestamp
+    test_end: pd.Timestamp
+    n_train: int
+    n_test: int
+    n_test_positive: int
+
+
+def fit_evaluation_model(
+    dataset: pd.DataFrame,
+    cutoff: DateLike = DEFAULT_CUTOFF,
+    horizon: int = DEFAULT_HORIZON,
+) -> LogisticRegression:
+    """Fit the model on the training side of ``time_split`` only.
+
+    Args:
+        dataset: Output of ``build_dataset``.
+        cutoff: Cutoff month, see ``time_split``.
+        horizon: Target horizon in months, see ``time_split``.
+
+    Returns:
+        The fitted model, which has never seen the test months.
+
+    Raises:
+        TypeError: See ``time_split``.
+        ValueError: See ``time_split``.
+    """
+    train, _ = time_split(dataset, cutoff, horizon)
+    return fit_model(train)
+
+
+def evaluate(
+    dataset: pd.DataFrame,
+    cutoff: DateLike = DEFAULT_CUTOFF,
+    horizon: int = DEFAULT_HORIZON,
+) -> Evaluation:
+    """Evaluate the model on the test period against a naive baseline.
+
+    The model is fitted on the training set only (see ``time_split``) and scored
+    on the test set. The baseline predicts the training base rate for every month.
+    Two scores are reported:
+
+    - ROC AUC: probability that a random positive month gets a higher score than
+      a random negative month (0.5 = no skill, 1 = perfect ranking).
+    - Brier score: mean squared error between predicted probabilities and actual
+      outcomes (0 = perfect, lower is better).
+
+    Args:
+        dataset: Output of ``build_dataset``.
+        cutoff: Cutoff month, see ``time_split``.
+        horizon: Target horizon in months, see ``time_split``.
+
+    Returns:
+        An ``Evaluation`` with the scores and the split details.
+
+    Raises:
+        TypeError: See ``time_split``.
+        ValueError: See ``time_split``.
+    """
+    train, test = time_split(dataset, cutoff, horizon)
+    model = fit_model(train)
+    actual = test[TARGET].astype(int)
+    predicted = predict_probability(model, test[FEATURE])
+    base_rate = float(train[TARGET].mean())
+    baseline = pd.Series(base_rate, index=test.index)
+
+    return Evaluation(
+        model_auc=float(roc_auc_score(actual, predicted)),
+        model_brier=float(brier_score_loss(actual, predicted)),
+        baseline_auc=float(roc_auc_score(actual, baseline)),
+        baseline_brier=float(brier_score_loss(actual, baseline)),
+        base_rate=base_rate,
+        train_start=train.index[0],
+        train_end=train.index[-1],
+        test_start=test.index[0],
+        test_end=test.index[-1],
+        n_train=len(train),
+        n_test=len(test),
+        n_test_positive=int(actual.sum()),
+    )
