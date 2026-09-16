@@ -131,3 +131,75 @@ def inversion_episodes(monthly: pd.Series, min_months: int = 1) -> list[Period]:
     """
     min_months = _validate_positive_int(min_months, "min_months")
     return _flag_to_periods(inversion_flag(monthly), min_months)
+
+
+def _validate_recession_indicator(usrec: object) -> pd.Series:
+    """Check that ``usrec`` is a monthly series containing only 0, 1 or NaN."""
+    usrec = _validate_monthly_series(usrec, "usrec")
+    values = usrec.dropna()
+    if not values.isin([0, 1]).all():
+        raise ValueError("usrec must contain only 0, 1 or missing values.")
+    return usrec
+
+
+def recession_periods(usrec: pd.Series) -> list[Period]:
+    """Turn the monthly recession indicator into recession periods.
+
+    Args:
+        usrec: Monthly NBER recession indicator (``USREC``): 1 during a
+            recession month, 0 otherwise, indexed by month starts.
+
+    Returns:
+        List of ``(start, end)`` timestamps in chronological order, where
+        ``start`` is the first day of the first recession month and ``end`` the
+        last day of the last one (both inclusive). Useful for chart shading.
+
+    Raises:
+        TypeError: If ``usrec`` is not a numeric Series indexed by dates.
+        ValueError: If the dates are unsorted, duplicated or not month starts, or
+            a value is not 0, 1 or missing.
+    """
+    usrec = _validate_recession_indicator(usrec)
+    return _flag_to_periods(usrec == 1)
+
+
+def recession_within_horizon(usrec: pd.Series, horizon: int = 12) -> pd.Series:
+    """Build the prediction target: is there a recession in the next months?
+
+    For each month ``t``, the target is 1 if any month in ``(t, t + horizon]``
+    is a recession month, and 0 otherwise. Month ``t`` itself is excluded: the
+    question is whether a recession is *coming*.
+
+    To avoid look-ahead leakage, the target is ``NaN`` whenever the window is
+    not fully known: for the last ``horizon`` months of the data, and for months
+    whose window contains a missing value or a month absent from the index.
+
+    Args:
+        usrec: Monthly NBER recession indicator (``USREC``), indexed by month
+            starts, with values 0, 1 or ``NaN``.
+        horizon: Number of months to look ahead. Defaults to 12.
+
+    Returns:
+        Float series (0.0, 1.0 or ``NaN``) with the same index as ``usrec``,
+        named ``"recession_within_<horizon>m"``.
+
+    Raises:
+        TypeError: If ``usrec`` is not a numeric Series indexed by dates, or
+            ``horizon`` is not an integer.
+        ValueError: If the dates are unsorted, duplicated or not month starts, a
+            value is not 0, 1 or missing, or ``horizon`` is below 1.
+    """
+    usrec = _validate_recession_indicator(usrec)
+    horizon = _validate_positive_int(horizon, "horizon")
+    name = f"recession_within_{horizon}m"
+    if usrec.empty:
+        return pd.Series([], index=usrec.index, name=name, dtype="float64")
+
+    full_range = pd.date_range(usrec.index.min(), usrec.index.max(), freq="MS")
+    full = usrec.astype("float64").reindex(full_range)
+    # Rolling on the reversed series gives, at t, the max over [t, t + horizon - 1];
+    # shift(-1) then moves the window to (t, t + horizon]. min_periods=horizon turns
+    # a window that is incomplete (end of data or missing month) into NaN.
+    forward_max = full[::-1].rolling(horizon, min_periods=horizon).max()[::-1]
+    target = forward_max.shift(-1)
+    return target.reindex(usrec.index).rename(name)
