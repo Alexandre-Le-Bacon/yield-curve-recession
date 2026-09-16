@@ -61,3 +61,13 @@ st.page_link(
     label="The signal: 40 years of the spread, next to every recession",
     icon="🔔",
 )
+st.page_link(
+    "pages/3_The_model.py",
+    label="The model: today's 12-month recession probability, and how well it works",
+    icon="🎯",
+)
+st.page_link(
+    "pages/4_Data_and_method.py",
+    label="Data and method: sources, how the model is built, and its limits",
+    icon="📚",
+)

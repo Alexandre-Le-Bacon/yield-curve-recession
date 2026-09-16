@@ -50,6 +50,16 @@ def test_home_page_runs():
     assert app.sidebar.caption[0].value.startswith("Data: FRED, downloaded ")
 
 
+def test_home_page_links_to_every_page():
+    app = run_home()
+
+    # Streamlit links pages by URL name: "pages/2_The_signal.py" -> "The_signal".
+    linked = {link.proto.page for link in app.get("page_link")}
+    pages = {path.stem.split("_", 1)[1] for path in (APP_DIR / "pages").glob("*.py")}
+    assert pages
+    assert pages <= linked
+
+
 def test_understand_the_curve_page_runs():
     app = run_home()
     app.switch_page("pages/1_Understand_the_curve.py").run()
