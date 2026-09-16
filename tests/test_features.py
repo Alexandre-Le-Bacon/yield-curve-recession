@@ -6,6 +6,8 @@ from yield_curve.features import (
     inversion_episodes,
     inversion_flag,
     monthly_spread,
+    recession_periods,
+    recession_within_horizon,
 )
 
 
@@ -201,3 +203,136 @@ class TestInversionEpisodes:
     def test_rejects_daily_series(self, daily_series):
         with pytest.raises(ValueError, match="month starts"):
             inversion_episodes(daily_series)
+
+
+# --- recession_periods ---------------------------------------------------------
+
+
+class TestRecessionPeriods:
+    def test_groups_recession_months(self):
+        usrec = months("2020-01-01", [0, 1, 1, 0, 0, 1], name="USREC")
+
+        assert recession_periods(usrec) == [
+            (ts("2020-02-01"), ts("2020-03-31")),
+            (ts("2020-06-01"), ts("2020-06-30")),
+        ]
+
+    def test_no_recession_gives_empty_list(self):
+        assert recession_periods(months("2020-01-01", [0, 0], name="USREC")) == []
+
+    def test_empty_series_gives_empty_list(self):
+        empty = pd.Series([], index=pd.DatetimeIndex([]), dtype="float64")
+        assert recession_periods(empty) == []
+
+    def test_missing_value_splits_period(self):
+        usrec = months("2020-01-01", [1, np.nan, 1], name="USREC")
+        assert len(recession_periods(usrec)) == 2
+
+    def test_integer_indicator_is_accepted(self):
+        usrec = months("2020-01-01", [1, 1], name="USREC").astype("int64")
+        assert recession_periods(usrec) == [(ts("2020-01-01"), ts("2020-02-29"))]
+
+    @pytest.mark.parametrize("bad_value", [2.0, -1.0, 0.5])
+    def test_rejects_values_other_than_zero_or_one(self, bad_value):
+        usrec = months("2020-01-01", [0, bad_value], name="USREC")
+        with pytest.raises(ValueError, match="0, 1"):
+            recession_periods(usrec)
+
+    def test_rejects_daily_series(self, daily_series):
+        with pytest.raises(ValueError, match="month starts"):
+            recession_periods(daily_series.clip(upper=1))
+
+    def test_rejects_non_series(self):
+        with pytest.raises(TypeError, match="pandas Series"):
+            recession_periods([0, 1])
+
+
+# --- recession_within_horizon --------------------------------------------------
+
+
+class TestRecessionWithinHorizon:
+    def test_looks_at_the_next_months_only(self):
+        # Recession in month 4 (index 3) only, horizon of 2 months.
+        usrec = months("2020-01-01", [0, 0, 0, 1, 0, 0, 0, 0], name="USREC")
+
+        result = recession_within_horizon(usrec, horizon=2)
+
+        expected = [0.0, 1.0, 1.0, 0.0, 0.0, 0.0, np.nan, np.nan]
+        np.testing.assert_array_equal(result.to_numpy(), expected)
+        assert result.name == "recession_within_2m"
+        pd.testing.assert_index_equal(result.index, usrec.index)
+
+    def test_default_horizon_boundaries(self):
+        # One recession month at index 13: visible from t = 1 (t + 12) up to t = 12.
+        values = [0.0] * 30
+        values[13] = 1.0
+        usrec = months("2000-01-01", values, name="USREC")
+
+        result = recession_within_horizon(usrec)
+
+        assert result.name == "recession_within_12m"
+        assert result.iloc[0] == 0.0  # recession at t + 13: out of the window
+        assert result.iloc[1] == 1.0  # recession at t + 12: in the window
+        assert result.iloc[12] == 1.0  # recession at t + 1
+        assert result.iloc[13] == 0.0  # current month does not count
+
+    def test_last_horizon_months_are_nan(self):
+        usrec = months("2000-01-01", [1.0] * 24, name="USREC")
+
+        result = recession_within_horizon(usrec)
+
+        assert result.iloc[:12].eq(1.0).all()
+        assert result.iloc[-12:].isna().all()
+
+    def test_series_shorter_than_horizon_is_all_nan(self):
+        usrec = months("2000-01-01", [0, 1, 0], name="USREC")
+        assert recession_within_horizon(usrec).isna().all()
+
+    def test_missing_value_in_window_gives_nan(self):
+        usrec = months("2020-01-01", [0, 0, np.nan, 0, 0, 0], name="USREC")
+
+        result = recession_within_horizon(usrec, horizon=2)
+
+        np.testing.assert_array_equal(
+            result.to_numpy(), [np.nan, np.nan, 0.0, 0.0, np.nan, np.nan]
+        )
+
+    def test_month_absent_from_index_gives_nan(self):
+        index = pd.to_datetime(["2020-01-01", "2020-02-01", "2020-04-01", "2020-05-01"])
+        usrec = pd.Series([0.0, 0.0, 0.0, 0.0], index=index)
+
+        result = recession_within_horizon(usrec, horizon=1)
+
+        np.testing.assert_array_equal(result.to_numpy(), [0.0, np.nan, 0.0, np.nan])
+        pd.testing.assert_index_equal(result.index, usrec.index)
+
+    def test_empty_series_gives_empty_float_series(self):
+        empty = pd.Series([], index=pd.DatetimeIndex([]), dtype="float64")
+
+        result = recession_within_horizon(empty)
+
+        assert result.empty
+        assert result.dtype == "float64"
+
+    def test_does_not_modify_input(self):
+        usrec = months("2020-01-01", [0, 1, 0], name="USREC")
+        before = usrec.copy()
+        recession_within_horizon(usrec, horizon=1)
+        pd.testing.assert_series_equal(usrec, before)
+
+    @pytest.mark.parametrize("horizon", [0, -12])
+    def test_rejects_horizon_below_one(self, horizon):
+        usrec = months("2020-01-01", [0, 1], name="USREC")
+        with pytest.raises(ValueError, match="at least 1"):
+            recession_within_horizon(usrec, horizon=horizon)
+
+    @pytest.mark.parametrize("horizon", [12.0, "12", None])
+    def test_rejects_non_integer_horizon(self, horizon):
+        usrec = months("2020-01-01", [0, 1], name="USREC")
+        with pytest.raises(TypeError, match="integer"):
+            recession_within_horizon(usrec, horizon=horizon)
+
+    def test_rejects_invalid_indicator_values(self):
+        usrec = months("2020-01-01", [0, 3], name="USREC")
+        with pytest.raises(ValueError, match="0, 1"):
+            recession_within_horizon(usrec)
