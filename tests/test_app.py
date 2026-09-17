@@ -50,6 +50,23 @@ def test_home_page_runs():
     assert app.sidebar.caption[0].value.startswith("Data: FRED, downloaded ")
 
 
+def test_home_page_conclusion_is_built_from_the_evaluation():
+    from yield_curve.data import load_series
+    from yield_curve.model import build_dataset, evaluate
+
+    app = run_home()
+
+    evaluation = evaluate(build_dataset(load_series("T10Y3M"), load_series("USREC")))
+    subheaders = [subheader.value for subheader in app.subheader]
+    assert "So, can it?" in subheaders
+    conclusion = next(m.value for m in app.markdown if "Brier score" in m.value)
+    assert f"{evaluation.model_brier:.3f}" in conclusion
+    assert f"{evaluation.baseline_brier:.3f}" in conclusion
+    assert conclusion.startswith(
+        ("**Yes, so far.**", "**Partly.**", "**Not reliably.**")
+    )
+
+
 def test_home_page_links_to_every_page():
     app = run_home()
 
