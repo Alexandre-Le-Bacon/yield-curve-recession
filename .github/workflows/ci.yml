@@ -40,3 +40,45 @@ jobs:
 
       - name: Run tests with coverage (fails below 90%)
         run: uv run pytest --cov=src --cov-report=term-missing
+
+  docker:
+    name: Docker image builds and runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE: yield-curve-recession:ci
+      CONTAINER: yield-curve-recession-ci
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Build the image (not pushed)
+        run: docker build --tag "$IMAGE" .
+
+      - name: Start the container
+        run: docker run --detach --name "$CONTAINER" --publish 8501:8501 "$IMAGE"
+
+      - name: Wait until the container is healthy
+        # Uses the HEALTHCHECK defined in the Dockerfile; fails after about 2 minutes.
+        run: |
+          for attempt in $(seq 1 60); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' "$CONTAINER")
+            echo "Attempt $attempt: $status"
+            if [ "$status" = "healthy" ]; then exit 0; fi
+            if [ "$status" = "unhealthy" ]; then exit 1; fi
+            sleep 2
+          done
+          echo "The container did not become healthy in time."
+          exit 1
+
+      - name: Check the health endpoint and the home page
+        run: |
+          test "$(curl --fail --silent http://localhost:8501/_stcore/health)" = "ok"
+          curl --fail --silent --output /dev/null http://localhost:8501/
+
+      - name: Check the container runs as a non-root user
+        run: test "$(docker exec "$CONTAINER" whoami)" = "app"
+
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs "$CONTAINER" || true
