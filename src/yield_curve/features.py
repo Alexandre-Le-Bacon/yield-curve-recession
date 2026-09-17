@@ -324,6 +324,102 @@ def recession_after(
     return RecessionAfter(month, months, first, months_later, complete)
 
 
+@dataclass(frozen=True)
+class TrackRecord:
+    """How well yield curve inversions lined up with recessions.
+
+    Attributes:
+        within_months: Window used to link an inversion and a recession, in months.
+        min_months: Minimum length of an inversion episode, in months.
+        recessions: Recessions that started after the first month of spread data.
+        preceded: Those of ``recessions`` with an inversion episode starting in the
+            ``within_months`` months before the recession started.
+        episodes: All inversion episodes of at least ``min_months`` months.
+        followed: Episodes followed by a recession starting within ``within_months``
+            months of the episode start.
+        false_alarms: Episodes not followed by a recession, although the whole
+            window is known.
+        pending: Episodes not followed by a recession so far, whose window is not
+            complete yet: too recent to judge.
+    """
+
+    within_months: int
+    min_months: int
+    recessions: tuple[Period, ...]
+    preceded: tuple[Period, ...]
+    episodes: tuple[Period, ...]
+    followed: tuple[Period, ...]
+    false_alarms: tuple[Period, ...]
+    pending: tuple[Period, ...]
+
+
+def signal_track_record(
+    monthly: pd.Series,
+    usrec: pd.Series,
+    within_months: int = 24,
+    min_months: int = 3,
+) -> TrackRecord:
+    """Summarize the inversion signal: recessions it preceded and its false alarms.
+
+    Args:
+        monthly: Monthly spread, as returned by ``monthly_spread``.
+        usrec: Monthly NBER recession indicator (``USREC``), indexed by month
+            starts, with values 0, 1 or ``NaN``.
+        within_months: Maximum gap between the start of an inversion and the start
+            of a recession for the two to be linked. Defaults to 24.
+        min_months: Minimum length of an inversion episode, see
+            ``inversion_episodes``. Defaults to 3.
+
+    Returns:
+        A ``TrackRecord``. Only recessions starting after the first month with a
+        spread value are considered, so that the curve before them is known. With
+        no spread data at all, every field is empty.
+
+    Raises:
+        TypeError: If an input has the wrong type or an integer argument is not an
+            integer.
+        ValueError: If an input is malformed or an integer argument is below 1.
+    """
+    within_months = _validate_positive_int(within_months, "within_months")
+    episodes = inversion_episodes(monthly, min_months)
+    all_recessions = recession_periods(usrec)
+    valid_spread = monthly.dropna()
+    if valid_spread.empty:
+        return TrackRecord(within_months, min_months, (), (), (), (), (), ())
+
+    first_month = valid_spread.index[0]
+    recessions = [period for period in all_recessions if period[0] > first_month]
+    preceded = [
+        (start, end)
+        for start, end in recessions
+        if any(
+            start - pd.offsets.MonthBegin(within_months) <= episode_start < start
+            for episode_start, _ in episodes
+        )
+    ]
+
+    followed, false_alarms, pending = [], [], []
+    for episode in episodes:
+        after = recession_after(usrec, episode[0], months=within_months)
+        if after.first_recession_month is not None:
+            followed.append(episode)
+        elif after.complete:
+            false_alarms.append(episode)
+        else:
+            pending.append(episode)
+
+    return TrackRecord(
+        within_months=within_months,
+        min_months=min_months,
+        recessions=tuple(recessions),
+        preceded=tuple(preceded),
+        episodes=tuple(episodes),
+        followed=tuple(followed),
+        false_alarms=tuple(false_alarms),
+        pending=tuple(pending),
+    )
+
+
 def yield_curve_on(
     yields: pd.DataFrame, when: DateLike
 ) -> tuple[pd.Timestamp, pd.Series]:

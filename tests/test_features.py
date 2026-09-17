@@ -14,6 +14,7 @@ from yield_curve.features import (
     recession_after,
     recession_periods,
     recession_within_horizon,
+    signal_track_record,
     yield_curve_on,
 )
 
@@ -598,3 +599,115 @@ class TestRecessionAfter:
     def test_rejects_invalid_indicator(self, usrec):
         with pytest.raises(ValueError, match="0, 1"):
             recession_after(usrec * 2, "2020-01-01")
+
+
+# --- signal_track_record -------------------------------------------------------
+
+
+class TestSignalTrackRecord:
+    """Synthetic history, 2000-01 to 2009-12 (120 months).
+
+    - Inversion A: 2001-01 to 2001-03 (3 months), recession 2002-01 to 2002-06.
+    - Inversion B: 2003-01 to 2003-01 (1 month only), no recession.
+    - Inversion C: 2004-01 to 2004-04 (4 months), no recession: false alarm.
+    - Recession 2007-01 to 2007-03 with no inversion in the 24 months before it.
+    - Inversion D: 2009-06 to 2009-08, window runs past the data: pending.
+    """
+
+    @pytest.fixture
+    def spread(self) -> pd.Series:
+        spread = months("2000-01-01", [1.0] * 120)
+        for first, last in [
+            ("2001-01", "2001-03"),
+            ("2003-01", "2003-01"),
+            ("2004-01", "2004-04"),
+            ("2009-06", "2009-08"),
+        ]:
+            spread.loc[first:last] = -0.5
+        return spread
+
+    @pytest.fixture
+    def usrec(self) -> pd.Series:
+        usrec = months("2000-01-01", [0.0] * 120, name="USREC")
+        usrec.loc["2002-01":"2002-06"] = 1.0
+        usrec.loc["2007-01":"2007-03"] = 1.0
+        return usrec
+
+    def test_links_inversions_and_recessions(self, spread, usrec):
+        result = signal_track_record(spread, usrec)
+
+        assert result.within_months == 24
+        assert result.min_months == 3
+        assert [start for start, _ in result.recessions] == [
+            ts("2002-01-01"),
+            ts("2007-01-01"),
+        ]
+        assert result.preceded == (result.recessions[0],)
+        assert [start for start, _ in result.episodes] == [
+            ts("2001-01-01"),
+            ts("2004-01-01"),
+            ts("2009-06-01"),
+        ]
+        assert result.followed == (result.episodes[0],)
+        assert result.false_alarms == (result.episodes[1],)
+        assert result.pending == (result.episodes[2],)
+
+    def test_every_episode_is_classified_once(self, spread, usrec):
+        result = signal_track_record(spread, usrec, min_months=1)
+
+        classified = result.followed + result.false_alarms + result.pending
+        assert sorted(classified) == sorted(result.episodes)
+        assert len(result.episodes) == 4
+
+    def test_short_episode_counts_with_lower_min_months(self, spread, usrec):
+        result = signal_track_record(spread, usrec, min_months=1)
+        assert (ts("2003-01-01"), ts("2003-01-31")) in result.false_alarms
+
+    def test_shorter_window_changes_the_links(self, spread, usrec):
+        # Inversion A starts 12 months before the recession: out of a 6-month window.
+        result = signal_track_record(spread, usrec, within_months=6)
+
+        assert result.preceded == ()
+        assert result.followed == ()
+        assert (ts("2001-01-01"), ts("2001-03-31")) in result.false_alarms
+
+    def test_window_boundaries_are_inclusive_at_the_far_end(self, spread, usrec):
+        # Inversion A starts exactly 12 months before the recession.
+        assert len(signal_track_record(spread, usrec, within_months=12).preceded) == 1
+        assert len(signal_track_record(spread, usrec, within_months=11).preceded) == 0
+
+    def test_recession_already_under_way_is_ignored(self, spread, usrec):
+        usrec = usrec.copy()
+        usrec.loc["2000-01"] = 1.0
+        result = signal_track_record(spread, usrec)
+        assert all(start > ts("2000-01-01") for start, _ in result.recessions)
+
+    def test_all_missing_spread_gives_empty_record(self, spread, usrec):
+        result = signal_track_record(spread * np.nan, usrec)
+
+        assert result.recessions == ()
+        assert result.episodes == ()
+        assert result.pending == ()
+
+    def test_result_is_immutable(self, spread, usrec):
+        result = signal_track_record(spread, usrec)
+        with pytest.raises(AttributeError):
+            result.pending = ()
+
+    @pytest.mark.parametrize("argument", ["within_months", "min_months"])
+    def test_rejects_values_below_one(self, spread, usrec, argument):
+        with pytest.raises(ValueError, match="at least 1"):
+            signal_track_record(spread, usrec, **{argument: 0})
+
+    @pytest.mark.parametrize("argument", ["within_months", "min_months"])
+    def test_rejects_non_integers(self, spread, usrec, argument):
+        with pytest.raises(TypeError, match="integer"):
+            signal_track_record(spread, usrec, **{argument: 2.5})
+
+    def test_rejects_invalid_indicator(self, spread, usrec):
+        with pytest.raises(ValueError, match="0, 1"):
+            signal_track_record(spread, usrec * 2)
+
+    def test_rejects_daily_spread(self, daily_series, usrec):
+        with pytest.raises(ValueError, match="month starts"):
+            signal_track_record(daily_series, usrec)

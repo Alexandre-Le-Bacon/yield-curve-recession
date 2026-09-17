@@ -1,0 +1,39 @@
+# The Dockerfile copies only what the image needs; this file keeps the build context
+# small and makes sure nothing local or secret is ever sent to the Docker daemon.
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Local environments, caches and build outputs
+.venv
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+.coverage.*
+htmlcov
+dist
+build
+*.egg-info
+
+# Not needed at runtime
+tests
+docs
+scripts
+*.md
+!README.md
+
+# Editor, OS and assistant files
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Secrets and local configuration
+.env
+.env.*
+.streamlit/secrets.toml
