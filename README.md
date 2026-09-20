@@ -66,7 +66,7 @@ shared `app/loaders.py`.
 No Python or uv needed, only [Docker](https://docs.docker.com/get-docker/). The image
 works on `linux/amd64` and `linux/arm64` (Intel/AMD machines and Apple Silicon).
 
-**From Docker Hub:**
+**From Docker Hub** (published by GitHub Actions, see below):
 
 ```bash
 docker pull alebacon0/yield-curve-recession:latest
@@ -97,13 +97,27 @@ How the image is built (`Dockerfile`):
   lists, without development tools; the base image is pinned by digest.
 
 <details>
-<summary>Publishing a multi-architecture image (maintainer)</summary>
+<summary>Publishing a new version (maintainer)</summary>
+
+The image is built and pushed by the **Publish image** workflow
+(`.github/workflows/publish.yml`), not from a developer machine: GitHub's runners
+build `linux/amd64` and `linux/arm64` together and push both under one tag.
+
+Publish by tagging a commit on `main`:
 
 ```bash
-docker login
-docker buildx build --platform linux/amd64,linux/arm64 \
-  --tag alebacon0/yield-curve-recession:latest --push .
+git tag v1.0.0
+git push origin v1.0.0
 ```
+
+Or run the workflow by hand from the Actions tab and type the version (for example
+`v1.0.0`). The version is required in both cases and must look like `v1.2.3`; the
+workflow stops with a clear message otherwise. Each run pushes two tags: the version
+and `latest`.
+
+The workflow needs two repository secrets, `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN`, where the token is a Docker Hub access token with **Read & Write**
+permission. The first push creates the Docker Hub repository as public.
 
 </details>
 
