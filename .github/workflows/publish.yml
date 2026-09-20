@@ -1,0 +1,105 @@
+name: Publish image
+
+# Builds the multi-architecture image on GitHub's runners and pushes it to Docker
+# Hub. Publishing from CI keeps the upload off any developer machine and builds
+# linux/amd64 and linux/arm64 in one go.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        # No default on purpose: a manual run must name the version to publish,
+        # so it can never silently republish an old one.
+        description: "Version to publish, for example v1.0.0"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel a running publish: a half-pushed image is worse than a slow one.
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: alebacon0/yield-curve-recession
+
+jobs:
+  publish:
+    name: Build and push to Docker Hub
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Work out the version to publish
+        id: version
+        # The inputs go through the environment, never straight into the script.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_TAG"
+          else
+            version="$REF_NAME"
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::No version given. Re-run this workflow and enter the version to publish, for example v1.0.0."
+            exit 1
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version '$version' must look like v1.2.3."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU (needed to build the arm64 image on an amd64 runner)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push the multi-architecture image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+          # Completes the OCI labels already set in the Dockerfile.
+          labels: |
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Keeps the Docker Hub tag page to the two architectures.
+          provenance: false
+
+      - name: Summarize what was published
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo "- \`$IMAGE:$VERSION\`"
+            echo "- \`$IMAGE:latest\`"
+            echo "- Platforms: linux/amd64, linux/arm64"
+            echo "- Digest: \`$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
